@@ -13,7 +13,7 @@ import { ReconciliationController } from './reconciliation.controller';
 import { ReconciliationProcessor } from './reconciliation.processor';
 import { QUEUE_RECONCILIATION } from '../common/queues/queues.constants';
 import { AuthModule } from '../auth/auth.module';
-import { HealthModule } from '../health/health.module';
+import { RpcFailoverModule } from '../health/rpc-failover.module';
 
 @Module({
   imports: [
@@ -30,7 +30,7 @@ import { HealthModule } from '../health/health.module';
       name: QUEUE_RECONCILIATION,
     }),
     AuthModule,
-    HealthModule,
+    RpcFailoverModule,
   ],
   controllers: [ReconciliationController],
   providers: [ReconciliationService, ReconciliationProcessor],

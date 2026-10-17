@@ -1,26 +1,12 @@
 import { Module } from '@nestjs/common';
-import { HttpModule } from '@nestjs/axios';
 import { HealthController } from './health.controller';
 import { ShutdownService } from './shutdown.service';
-import { HealthService } from './health.service';
-import { SorobanRpc } from '@stellar/stellar-sdk';
+import { RpcFailoverModule } from './rpc-failover.module';
 
 @Module({
-  imports: [
-    HttpModule, // provides HttpService for Stellar RPC ping
-  ],
+  imports: [RpcFailoverModule],
   controllers: [HealthController],
-  providers: [
-    ShutdownService,
-    HealthService,
-    {
-      provide: SorobanRpc.Server,
-      useFactory: (health: HealthService) => health.getRpcServer(),
-      inject: [HealthService],
-    },
-  ],
-  exports: [ShutdownService, HealthService, SorobanRpc.Server],
-  // DataSource is provided globally by TypeOrmModule.forRoot() in AppModule
-  // so it can be injected directly — no extra registration needed here
+  providers: [ShutdownService],
+  exports: [ShutdownService],
 })
 export class HealthModule {}

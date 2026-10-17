@@ -17,7 +17,7 @@ import { OracleHealthService } from './oracle-health.service';
 import { OracleHealthController } from './oracle-health.controller';
 import { IpfsService } from '../storage/ipfs.service';
 import { Token } from '../token/entities/token.entity';
-import { HealthModule } from '../health/health.module';
+import { RpcFailoverModule } from '../health/rpc-failover.module';
 
 @Module({
   imports: [
@@ -30,7 +30,7 @@ import { HealthModule } from '../health/health.module';
       Token,
     ]),
     forwardRef(() => CallsModule),
-    HealthModule,
+    RpcFailoverModule,
   ],
   controllers: [OracleController, OracleHealthController],
   providers: [

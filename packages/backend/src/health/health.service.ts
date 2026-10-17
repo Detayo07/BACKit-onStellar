@@ -54,8 +54,15 @@ export class HealthService implements OnModuleInit {
     };
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.probeAll();
+  onModuleInit(): void {
+    void this.probeAll().catch((error: unknown) => {
+      this.logger.error(
+        JSON.stringify({
+          event: 'rpc_probe_error',
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    });
   }
 
   @Interval(10_000)

@@ -13,7 +13,7 @@ import { PayoutsModule } from '../payouts/payouts.module';
 import { TreasuryModule } from '../treasury/treasury.module';
 import { FailedTransaction } from './entities/failed-transaction.entity';
 import { DiagnosticParserService } from './diagnostic-parser.service';
-import { HealthModule } from '../health/health.module';
+import { RpcFailoverModule } from '../health/rpc-failover.module';
 
 @Module({
   imports: [
@@ -23,7 +23,7 @@ import { HealthModule } from '../health/health.module';
     NotificationsModule,
     PayoutsModule,
     TreasuryModule,
-    HealthModule,
+    RpcFailoverModule,
   ],
   controllers: [IndexerController],
   providers: [
