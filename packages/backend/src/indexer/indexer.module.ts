@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
-import { SorobanRpc } from '@stellar/stellar-sdk';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { IndexerService } from './indexer.service';
 import { IndexerController } from './indexer.controller';
@@ -14,6 +13,7 @@ import { PayoutsModule } from '../payouts/payouts.module';
 import { TreasuryModule } from '../treasury/treasury.module';
 import { FailedTransaction } from './entities/failed-transaction.entity';
 import { DiagnosticParserService } from './diagnostic-parser.service';
+import { HealthModule } from '../health/health.module';
 
 @Module({
   imports: [
@@ -23,6 +23,7 @@ import { DiagnosticParserService } from './diagnostic-parser.service';
     NotificationsModule,
     PayoutsModule,
     TreasuryModule,
+    HealthModule,
   ],
   controllers: [IndexerController],
   providers: [
@@ -30,14 +31,6 @@ import { DiagnosticParserService } from './diagnostic-parser.service';
     EventParser,
     PlatformSettingsService,
     DiagnosticParserService,
-    {
-      provide: SorobanRpc.Server,
-      useFactory: () => {
-        return new SorobanRpc.Server(
-          process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org',
-        );
-      },
-    },
   ],
   exports: [IndexerService, DiagnosticParserService],
 })

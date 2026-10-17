@@ -27,6 +27,23 @@
 
 ## Project setup
 
+### Soroban RPC failover
+
+Set `STELLAR_RPC_URL` (or the legacy `SOROBAN_RPC_URL`) for the primary RPC
+endpoint. Set `STELLAR_RPC_FALLBACK_URL` (or `SOROBAN_RPC_FALLBACK_URL`) to a
+second node on the **same Stellar network**. Without a fallback, the backend
+continues in single-node mode.
+
+Both nodes are probed with `getHealth` every 10 seconds. A node whose latest
+ledger is more than two behind the healthiest node is excluded. Three
+consecutive failures, or more than 20% failures in a ten-sample window (after
+at least five samples), open its circuit for 30 seconds. A successful half-open
+probe restores it. Read RPC requests retry once on a healthy backup; transaction
+submissions are not retried automatically because their outcome may be unknown.
+The active node and probe results appear at `GET /health/metrics` in Prometheus
+text format. The regular `GET /health` route reports RPC as reachable while at
+least one node is available.
+
 ```bash
 $ pnpm install
 ```

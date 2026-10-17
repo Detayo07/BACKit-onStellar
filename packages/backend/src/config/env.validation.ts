@@ -1,6 +1,9 @@
 export interface EnvConfig {
   DATABASE_URL?: string;
   SOROBAN_RPC_URL?: string;
+  STELLAR_RPC_URL?: string;
+  STELLAR_RPC_FALLBACK_URL?: string;
+  SOROBAN_RPC_FALLBACK_URL?: string;
   ORACLE_SIGNER_SECRET?: string;
   CALL_REGISTRY_CONTRACT_ID?: string;
   OUTCOME_MANAGER_CONTRACT_ID?: string;
@@ -10,7 +13,10 @@ export interface EnvConfig {
 }
 
 export const validateEnv = (config: Record<string, unknown>): EnvConfig => {
-  const port = config.PORT ? parseInt(String(config.PORT), 10) : 3001;
+  const port =
+    typeof config.PORT === 'string' || typeof config.PORT === 'number'
+      ? parseInt(String(config.PORT), 10)
+      : 3001;
   const nodeEnv = (config.NODE_ENV as string) || 'development';
   const jwtSecret =
     (config.JWT_SECRET as string) || 'super-secret-jwt-token-key-32-chars-min!';
@@ -22,6 +28,9 @@ export const validateEnv = (config: Record<string, unknown>): EnvConfig => {
   return {
     DATABASE_URL: config.DATABASE_URL as string,
     SOROBAN_RPC_URL: config.SOROBAN_RPC_URL as string,
+    STELLAR_RPC_URL: config.STELLAR_RPC_URL as string,
+    STELLAR_RPC_FALLBACK_URL: config.STELLAR_RPC_FALLBACK_URL as string,
+    SOROBAN_RPC_FALLBACK_URL: config.SOROBAN_RPC_FALLBACK_URL as string,
     ORACLE_SIGNER_SECRET: config.ORACLE_SIGNER_SECRET as string,
     CALL_REGISTRY_CONTRACT_ID: config.CALL_REGISTRY_CONTRACT_ID as string,
     OUTCOME_MANAGER_CONTRACT_ID: config.OUTCOME_MANAGER_CONTRACT_ID as string,

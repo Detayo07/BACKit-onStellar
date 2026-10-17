@@ -3,10 +3,9 @@ import {
   Get,
   ServiceUnavailableException,
   VERSION_NEUTRAL,
+  Header,
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
 import {
   ApiTags,
   ApiOperation,
@@ -14,20 +13,16 @@ import {
   ApiResponse,
 } from '@nestjs/swagger';
 import { ShutdownService } from './shutdown.service';
+import { HealthService } from './health.service';
 
 @ApiTags('health')
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
-  private readonly rpcUrl: string;
-
   constructor(
     private readonly dataSource: DataSource,
-    private readonly httpService: HttpService,
+    private readonly healthService: HealthService,
     private readonly shutdownService: ShutdownService,
-  ) {
-    this.rpcUrl =
-      process.env.STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
-  }
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -61,11 +56,11 @@ export class HealthController {
     },
   })
   async check() {
-    const [database, stellar_rpc, memory_heap_mb] = await Promise.all([
-      this.checkDatabase(),
-      this.checkStellarRpc(),
-      this.checkMemory(),
-    ]);
+    const database = await this.checkDatabase();
+    const stellar_rpc = this.healthService.isAvailable()
+      ? 'reachable'
+      : 'unreachable';
+    const memory_heap_mb = this.checkMemory();
 
     const status =
       database === 'connected' && stellar_rpc === 'reachable' ? 'ok' : 'error';
@@ -104,6 +99,12 @@ export class HealthController {
     return { status: 'ready' };
   }
 
+  @Get('metrics')
+  @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+  metrics(): string {
+    return this.healthService.prometheusMetrics();
+  }
+
   // ─── Private Checks ───────────────────────────────────────────────────────
 
   private async checkDatabase(): Promise<'connected' | 'disconnected'> {
@@ -112,21 +113,6 @@ export class HealthController {
       return 'connected';
     } catch {
       return 'disconnected';
-    }
-  }
-
-  private async checkStellarRpc(): Promise<'reachable' | 'unreachable'> {
-    try {
-      const { status } = await firstValueFrom(
-        this.httpService.post(
-          this.rpcUrl,
-          { jsonrpc: '2.0', id: 1, method: 'getHealth', params: [] },
-          { timeout: 5000 },
-        ),
-      );
-      return status === 200 ? 'reachable' : 'unreachable';
-    } catch {
-      return 'unreachable';
     }
   }
 

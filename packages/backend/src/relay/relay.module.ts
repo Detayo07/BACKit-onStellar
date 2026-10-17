@@ -1,22 +1,12 @@
 import { Module } from '@nestjs/common';
-import { SorobanRpc } from '@stellar/stellar-sdk';
 import { RelayController } from './relay.controller';
 import { RelayService } from './relay.service';
 import { PlatformConfigModule } from '../config/config.module';
+import { HealthModule } from '../health/health.module';
 
 @Module({
-  imports: [PlatformConfigModule],
+  imports: [PlatformConfigModule, HealthModule],
   controllers: [RelayController],
-  providers: [
-    RelayService,
-    {
-      provide: SorobanRpc.Server,
-      useFactory: () => {
-        return new SorobanRpc.Server(
-          process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org',
-        );
-      },
-    },
-  ],
+  providers: [RelayService],
 })
 export class RelayModule {}

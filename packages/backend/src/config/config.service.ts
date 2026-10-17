@@ -16,6 +16,22 @@ export interface AdminParamsChangedEvent {
   ledger: number;
 }
 
+/** Both legacy RPC variable names resolve to the same shared client. */
+export function getRpcEndpoints(env = process.env): {
+  primary: string;
+  fallback?: string;
+} {
+  const primary =
+    env.STELLAR_RPC_URL ||
+    env.SOROBAN_RPC_URL ||
+    'https://soroban-testnet.stellar.org';
+  const fallback = env.STELLAR_RPC_FALLBACK_URL || env.SOROBAN_RPC_FALLBACK_URL;
+  return {
+    primary,
+    fallback: fallback && fallback !== primary ? fallback : undefined,
+  };
+}
+
 @Injectable()
 export class ConfigService implements OnApplicationBootstrap {
   private readonly logger = new Logger(ConfigService.name);
@@ -35,9 +51,9 @@ export class ConfigService implements OnApplicationBootstrap {
   async onApplicationBootstrap() {
     try {
       await this.ensureSingleton();
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.warn(
-        `Failed to initialize singleton settings in ConfigService: ${error.message}`,
+        `Failed to initialize singleton settings in ConfigService: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

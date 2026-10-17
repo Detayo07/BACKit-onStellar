@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
-import { SorobanRpc } from '@stellar/stellar-sdk';
 import { ReconciliationRun } from './entities/reconciliation-run.entity';
 import { ReconciliationDiscrepancy } from './entities/reconciliation-discrepancy.entity';
 import { Call } from '../calls/entities/call.entity';
@@ -14,6 +13,7 @@ import { ReconciliationController } from './reconciliation.controller';
 import { ReconciliationProcessor } from './reconciliation.processor';
 import { QUEUE_RECONCILIATION } from '../common/queues/queues.constants';
 import { AuthModule } from '../auth/auth.module';
+import { HealthModule } from '../health/health.module';
 
 @Module({
   imports: [
@@ -30,20 +30,10 @@ import { AuthModule } from '../auth/auth.module';
       name: QUEUE_RECONCILIATION,
     }),
     AuthModule,
+    HealthModule,
   ],
   controllers: [ReconciliationController],
-  providers: [
-    ReconciliationService,
-    ReconciliationProcessor,
-    {
-      provide: SorobanRpc.Server,
-      useFactory: () => {
-        return new SorobanRpc.Server(
-          process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org',
-        );
-      },
-    },
-  ],
+  providers: [ReconciliationService, ReconciliationProcessor],
   exports: [ReconciliationService],
 })
 export class ReconciliationModule {}

@@ -1,5 +1,4 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { SorobanRpc } from '@stellar/stellar-sdk';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OracleService } from './oracle.service';
 import { OracleController } from './oracle.controller';
@@ -18,6 +17,7 @@ import { OracleHealthService } from './oracle-health.service';
 import { OracleHealthController } from './oracle-health.controller';
 import { IpfsService } from '../storage/ipfs.service';
 import { Token } from '../token/entities/token.entity';
+import { HealthModule } from '../health/health.module';
 
 @Module({
   imports: [
@@ -30,6 +30,7 @@ import { Token } from '../token/entities/token.entity';
       Token,
     ]),
     forwardRef(() => CallsModule),
+    HealthModule,
   ],
   controllers: [OracleController, OracleHealthController],
   providers: [
@@ -41,14 +42,6 @@ import { Token } from '../token/entities/token.entity';
     CoinGeckoService,
     PriceDeviationService,
     PriceDeviationWorker,
-    {
-      provide: SorobanRpc.Server,
-      useFactory: () => {
-        return new SorobanRpc.Server(
-          process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org',
-        );
-      },
-    },
   ],
   exports: [
     OracleService,
