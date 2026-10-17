@@ -301,6 +301,25 @@ fn try_compute_twap(
 #[contract]
 pub struct OutcomeManager;
 
+/// Digest identifying one signed outcome *on this deployment*: the oracle key,
+/// the signed message and signature, the network id and this contract's address.
+/// Including the last two means the same bytes replayed on another network or
+/// another deployment of the contract produce a different digest.
+fn replay_digest(
+    env: &Env,
+    oracle: &BytesN<32>,
+    message: &Bytes,
+    signature: &BytesN<64>,
+) -> BytesN<32> {
+    let mut data = Bytes::new(env);
+    data.append(&Bytes::from_slice(env, &oracle.to_array()));
+    data.append(message);
+    data.append(&Bytes::from_slice(env, &signature.to_array()));
+    data.append(&Bytes::from_slice(env, &env.ledger().network_id().to_array()));
+    data.append(&env.current_contract_address().to_xdr(env));
+    env.crypto().sha256(&data).into()
+}
+
 #[contractimpl]
 impl OutcomeManager {
     pub fn initialize(
@@ -585,6 +604,22 @@ impl OutcomeManager {
             signed.timestamp,
         );
         verify_signature(&env, &signed.oracle_pubkey, &signed.signature, &message);
+
+        // Replay defence: a signed outcome is accepted at most once per
+        // deployment, permanently. `TempKey::Submission` above expires with
+        // temporary storage, so without this record an old signature could be
+        // resubmitted once that entry lapses.
+        let replay_key = PersistentKey::ProcessedDigest(replay_digest(
+            &env,
+            &signed.oracle_pubkey,
+            &message,
+            &signed.signature,
+        ));
+        if env.storage().persistent().has(&replay_key) {
+            soroban_sdk::panic_with_error!(&env, OutcomeError::ReplayedSubmission);
+        }
+        env.storage().persistent().set(&replay_key, &true);
+        ttl::extend_persistent(&env, &replay_key, Retention::Active);
 
         // SDEX cross-validation: if SDEX returns a midpoint, check deviation.
         // If SDEX has no liquidity, skip (None = graceful degradation).

@@ -16,7 +16,17 @@ pub struct MockToken;
 
 #[contractimpl]
 impl MockToken {
-    pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) {}
+    /// Tracks balances so the registry's balance-delta accounting sees real movement.
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        let from_balance: i128 = env.storage().instance().get(&from).unwrap_or(0);
+        env.storage().instance().set(&from, &(from_balance - amount));
+        let to_balance: i128 = env.storage().instance().get(&to).unwrap_or(0);
+        env.storage().instance().set(&to, &(to_balance + amount));
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().get(&id).unwrap_or(0)
+    }
 }
 
 const TEST_MIN_STAKE: i128 = 1_000_000;

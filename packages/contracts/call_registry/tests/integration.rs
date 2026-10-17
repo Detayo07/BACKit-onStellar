@@ -19,9 +19,18 @@ pub struct MockToken;
 
 #[contractimpl]
 impl MockToken {
-    pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) {}
-    pub fn balance(_env: Env, _id: Address) -> i128 {
-        1_000_000_000_i128
+    /// Tracks balances so the registry's balance-delta accounting sees real movement.
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        let from_balance: i128 = env.storage().instance().get(&from).unwrap_or(0);
+        env.storage().instance().set(&from, &(from_balance - amount));
+        let to_balance: i128 = env.storage().instance().get(&to).unwrap_or(0);
+        env.storage().instance().set(&to, &(to_balance + amount));
+    }
+
+    /// A fixed 1_000_000_000 baseline (used by the XLM-balance gate) plus whatever
+    /// transfers have moved, so balance deltas are real.
+    pub fn balance(env: Env, id: Address) -> i128 {
+        1_000_000_000_i128 + env.storage().instance().get::<_, i128>(&id).unwrap_or(0)
     }
     pub fn allowance(_env: Env, _from: Address, _spender: Address) -> i128 {
         1_000_000_000_i128

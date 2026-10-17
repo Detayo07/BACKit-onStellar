@@ -21,7 +21,51 @@ pub struct MockToken;
 
 #[contractimpl]
 impl MockToken {
+    /// Tracks balances so the registry's balance-delta accounting sees real movement.
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        let from_balance: i128 = env.storage().instance().get(&from).unwrap_or(0);
+        env.storage().instance().set(&from, &(from_balance - amount));
+        let to_balance: i128 = env.storage().instance().get(&to).unwrap_or(0);
+        env.storage().instance().set(&to, &(to_balance + amount));
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().get(&id).unwrap_or(0)
+    }
+}
+
+/// Fee-on-transfer token: the recipient receives `amount - amount * fee_bps / 10_000`
+/// (fee_bps is stored; 0 means the transfer delivers nothing when `deliver_nothing`).
+#[contract]
+pub struct FeeToken;
+
+#[contractimpl]
+impl FeeToken {
+    /// 10% is burned on every transfer.
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        let from_balance: i128 = env.storage().instance().get(&from).unwrap_or(0);
+        env.storage().instance().set(&from, &(from_balance - amount));
+        let received = amount - amount / 10;
+        let to_balance: i128 = env.storage().instance().get(&to).unwrap_or(0);
+        env.storage().instance().set(&to, &(to_balance + received));
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage().instance().get(&id).unwrap_or(0)
+    }
+}
+
+/// A token whose transfer succeeds but moves nothing.
+#[contract]
+pub struct ZeroDeltaToken;
+
+#[contractimpl]
+impl ZeroDeltaToken {
     pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) {}
+
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        0
+    }
 }
 
 // ── Test module ───────────────────────────────────────────────────────────────
@@ -1757,6 +1801,173 @@ mod call_registry {
 
         client.void_call(&call.id);
         client.claim_void_refund(&non_staker, &call.id);
+    }
+
+    // ── SC-017: fee-on-transfer escrow accounting ──────────────────────────────
+
+    fn make_call_with_token(
+        env: &Env,
+        client: &CallRegistryClient<'_>,
+        creator: &Address,
+        stake_token: &Address,
+    ) -> crate::types::Call {
+        client.whitelist_token(stake_token);
+        let token_address = Address::generate(env);
+        let pair_id = Bytes::from_slice(env, b"USDC/XLM");
+        let metadata_hash = BytesN::from_array(env, &[0u8; 32]);
+        create_call_with_default_condition(
+            client,
+            creator,
+            stake_token,
+            &100_000_000_i128,
+            &2000u64,
+            &token_address,
+            &pair_id,
+            &metadata_hash,
+            &2,
+        )
+    }
+
+    #[test]
+    fn test_stake_credits_net_received_for_fee_on_transfer_token() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let token = env.register_contract(None, FeeToken);
+        let call = make_call_with_token(&env, &client, &creator, &token);
+
+        let updated = client.stake_on_call(&staker, &call.id, &10_000_000_i128, &1);
+
+        // 10% fee: the contract received 9_000_000 and that is what is credited.
+        assert_eq!(updated.outcome_stakes.get(1).unwrap(), 9_000_000);
+        assert_eq!(client.get_staker_stake(&call.id, &staker, &1), 9_000_000);
+    }
+
+    #[test]
+    fn test_stake_credits_full_amount_for_plain_token() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+
+        let updated = client.stake_on_call(&staker, &call.id, &10_000_000_i128, &1);
+        assert_eq!(updated.outcome_stakes.get(1).unwrap(), 10_000_000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_stake_rejects_transfer_that_delivers_nothing() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let token = env.register_contract(None, ZeroDeltaToken);
+        let call = make_call_with_token(&env, &client, &creator, &token);
+
+        client.stake_on_call(&staker, &call.id, &10_000_000_i128, &1);
+    }
+
+    // ── SC-019: stake on behalf ────────────────────────────────────────────────
+
+    #[test]
+    fn test_stake_on_behalf_credits_the_beneficiary() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let funder = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+
+        client.stake_on_behalf(&funder, &beneficiary, &call.id, &5_000_000_i128, &1);
+
+        assert_eq!(client.get_staker_stake(&call.id, &beneficiary, &1), 5_000_000);
+        assert_eq!(client.get_staker_stake(&call.id, &funder, &1), 0);
+    }
+
+    // ── SC-020: emergency cancel ───────────────────────────────────────────────
+
+    #[test]
+    fn test_admin_emergency_cancel_enables_full_refund() {
+        let (env, client, admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        client.emergency_cancel_call(&admin, &call.id);
+
+        let updated = client.get_call(&call.id);
+        assert!(updated.cancelled && updated.voided);
+        client.withdraw_refund(&staker, &call.id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Refund already claimed")]
+    fn test_emergency_cancel_refund_cannot_be_withdrawn_twice() {
+        let (env, client, admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+        client.emergency_cancel_call(&admin, &call.id);
+
+        client.withdraw_refund(&staker, &call.id);
+        client.withdraw_refund(&staker, &call.id);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_staking_is_blocked_after_emergency_cancel() {
+        let (env, client, admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+        client.emergency_cancel_call(&admin, &call.id);
+
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Emergency cancel delay has not elapsed")]
+    fn test_creator_cannot_emergency_cancel_before_delay() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+
+        // end_ts is 2000; the 7-day delay has not passed.
+        client.emergency_cancel_call(&creator, &call.id);
+    }
+
+    #[test]
+    fn test_creator_can_emergency_cancel_unstaked_call_after_delay() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+
+        env.ledger().set_timestamp(2000 + 7 * 24 * 60 * 60 + 1);
+        client.emergency_cancel_call(&creator, &call.id);
+        assert!(client.get_call(&call.id).cancelled);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot cancel call with active stakes")]
+    fn test_creator_cannot_emergency_cancel_when_others_staked() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let (call, _) = make_call(&env, &client, &creator);
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        env.ledger().set_timestamp(2000 + 7 * 24 * 60 * 60 + 1);
+        client.emergency_cancel_call(&creator, &call.id);
     }
 
     // ── claim_expired_refund ──────────────────────────────────────────────────

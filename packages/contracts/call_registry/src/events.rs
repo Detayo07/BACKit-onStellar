@@ -457,3 +457,11 @@ pub fn emit_stake_limit_updated(env: &Env, user: &Address, new_limit: i128) {
         (user.clone(), new_limit),
     );
 }
+
+/// Emitted when a stalled call is emergency-cancelled
+pub fn emit_emergency_call_cancelled(env: &Env, call_id: u64, cancelled_by: &Address) {
+    env.events().publish(
+        ("call_registry", "emergency_call_cancelled"),
+        (call_id, cancelled_by.clone()),
+    );
+}

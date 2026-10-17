@@ -100,6 +100,9 @@ pub enum PersistentKey {
     /// `PersistentKey::Votes` for the established pattern of keying
     /// per-entity persistent data off this enum.
     RecoveryAddress(Address),
+    /// Permanent record that a signed outcome was accepted. The key is a digest
+    /// bound to this contract and network, so it can never collide across deployments.
+    ProcessedDigest(BytesN<32>),
 }
 
 /// A single price data point submitted by an oracle for TWAP calculation

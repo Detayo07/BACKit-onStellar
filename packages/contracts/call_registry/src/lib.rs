@@ -80,6 +80,7 @@ mod events;
 #[cfg(test)]
 mod fuzz_tests;
 mod governance;
+pub mod interface;
 mod reputation;
 mod sep10;
 mod shares;
@@ -107,6 +108,9 @@ macro_rules! reentrancy_guard {
 const MAX_CALL_PAGE_SIZE: u32 = 20;
 const MAX_CALL_STAKERS_PAGE_SIZE: u32 = 50;
 pub const CONTRACT_VERSION: u32 = 1;
+
+/// How long after `end_ts` a creator must wait before emergency-cancelling an unstaked call.
+pub const EMERGENCY_CANCEL_DELAY_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// CallRegistry contract implementation.
 /// Manages prediction calls and staking on market outcomes.
@@ -580,127 +584,24 @@ impl CallRegistry {
         amount: i128,
         position: u32,
     ) -> Result<Call, CallRegistryError> {
-        staker.require_auth();
-        reentrancy_guard!(&env);
+        Self::do_stake(env, staker.clone(), staker, call_id, amount, position)
+    }
 
-        if amount <= 0 {
-            return Err(CallRegistryError::InvalidStakeAmount);
-        }
-
-        let config = get_config(&env).expect("not initialized");
-        assert!(!config.paused, "Contract is paused");
-        if amount < config.min_stake {
-            panic!("stake below minimum");
-        }
-
-        let mut call = get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
-
-        let current_timestamp = env.ledger().timestamp();
-        if current_timestamp >= call.end_ts {
-            return Err(CallRegistryError::CallEnded);
-        }
-
-        // Staking cutoff: reject stakes within `staking_cutoff_secs` of end_ts.
-        let cutoff = config.staking_cutoff_secs;
-        if cutoff > 0 && call.end_ts > cutoff && current_timestamp >= call.end_ts - cutoff {
-            return Err(CallRegistryError::StakingCutoffActive);
-        }
-
-        if call.settled {
-            return Err(CallRegistryError::CallSettled);
-        }
-
-        if call.cancelled {
-            panic!("Call has been cancelled");
-        }
-
-        if call.voided {
-            panic!("Call has been voided");
-        }
-
-        // Validate position is within valid range
-        if position < 1 || position > call.outcome_count {
-            return Err(CallRegistryError::InvalidPosition);
-        }
-
-        // Track first interaction
-        if get_account_first_seen(&env, &staker).is_none() {
-            let deployed_seq: u32 = env
-                .storage()
-                .instance()
-                .get(&Symbol::new(&env, "deployed_seq"))
-                .unwrap_or(env.ledger().sequence());
-            set_account_first_seen(&env, &staker, deployed_seq);
-        }
-
-        if !Self::check_user_qualifies(env.clone(), staker.clone(), call_id) {
-            panic!("User does not meet the staking gate requirements");
-        }
-
-        let mut outcome_stakers = call.stakes.get(position).unwrap_or_else(|| Map::new(&env));
-        let staker_key = staker.clone();
-        let current_staker_stake = outcome_stakers.get(staker_key.clone()).unwrap_or(0);
-        let updated_staker_stake = current_staker_stake + amount;
-
-        // Reputation-weighted individual stake cap (per call, per position).
-        // Replaces the old flat `max_stake_per_user`-only check: the user's
-        // personal limit now scales with their on-chain prediction accuracy
-        // and historical stake volume (see `reputation` module), while
-        // `max_stake_per_user`, if configured, still acts as an absolute
-        // outer ceiling on top of it.
-        let staker_stats = get_creator_stats(&env, &staker);
-        let staker_volume = get_user_total_stake_volume(&env, &staker);
-        let effective_limit = reputation::effective_stake_limit(
-            &env,
-            config.base_stake_limit,
-            config.reputation_multiplier,
-            config.max_stake_per_user,
-            &staker_stats,
-            staker_volume,
-        );
-        if updated_staker_stake > effective_limit {
-            panic!("Stake exceeds reputation-weighted stake limit");
-        }
-
-        // Transfer tokens in — supports both native XLM and SAC-wrapped tokens.
-        transfer_token(
-            &env,
-            &call.stake_token,
-            &staker,
-            &env.current_contract_address(),
-            amount,
-        );
-
-        if let Some(share_token) = call.share_tokens.get(position) {
-            shares::mint_shares(&env, &share_token, &staker, amount);
-            emit_shares_minted(&env, call_id, &staker, position, amount);
-        }
-
-        // Update stake maps with generalized position support
-        let current_total = call.outcome_stakes.get(position).unwrap_or(0);
-        call.outcome_stakes.set(position, current_total + amount);
-
-        outcome_stakers.set(staker_key.clone(), updated_staker_stake);
-        call.stakes.set(position, outcome_stakers);
-
-        add_call_staker(&env, call_id, &staker);
-        set_user_stake(&env, call_id, &staker, position, updated_staker_stake);
-
-        set_call(&env, &call);
-        add_staker_call(&env, &staker, call_id);
-        record_stake(&env, &staker, amount);
-        record_user_stake_volume(&env, &staker, amount);
-        extend_storage_ttl(&env);
-
-        // Emit distinct XLM event so the indexer can differentiate XLM from USDC volume.
-        if is_native_xlm(&env, &call.stake_token) {
-            emit_xlm_stake_added(&env, call_id, &staker, amount, position);
-        } else {
-            emit_stake_added(&env, call_id, &staker, amount, position);
-        }
-
-        storage::release_lock(&env);
-        Ok(call)
+    /// Stake on behalf of another address (SC-019).
+    ///
+    /// `funder` authorises the transfer and pays; `beneficiary` owns the
+    /// resulting position, shares and refund rights. This is the entry point
+    /// external contracts (DAO treasuries, parlays, index funds) use, and it is
+    /// part of [`interface::CallRegistryTrait`].
+    pub fn stake_on_behalf(
+        env: Env,
+        funder: Address,
+        beneficiary: Address,
+        call_id: u64,
+        amount: i128,
+        position: u32,
+    ) -> Result<Call, CallRegistryError> {
+        Self::do_stake(env, funder, beneficiary, call_id, amount, position)
     }
 
     /// Redeem winning share tokens for a proportional payout.
@@ -1608,6 +1509,65 @@ impl CallRegistry {
         }
     }
 
+    /// Emergency-cancel a dead or stalled call (SC-020).
+    ///
+    /// The admin may cancel any unsettled call. The creator may cancel only
+    /// when nobody else has staked and `EMERGENCY_CANCEL_DELAY_SECS` (7 days)
+    /// have passed since the call ended. The call becomes cancelled and voided
+    /// (no further staking), the creator's escrowed stake is returned, and
+    /// every staker can recover their exact principal, with no fee, through
+    /// [`Self::withdraw_refund`]. Emits `emergency_call_cancelled`.
+    pub fn emergency_cancel_call(env: Env, caller: Address, call_id: u64) {
+        caller.require_auth();
+
+        let config = get_config(&env).expect("Not initialized");
+        let mut call = get_call(&env, call_id).expect("Call not found");
+
+        if call.settled {
+            panic!("Call already settled");
+        }
+        if call.cancelled || call.voided {
+            panic!("Call already cancelled");
+        }
+
+        if caller != config.admin {
+            if caller != call.creator {
+                panic!("not authorized to emergency-cancel");
+            }
+            let total_staked: i128 = (1..=call.outcome_count)
+                .map(|i| call.outcome_stakes.get(i).unwrap_or(0))
+                .sum();
+            if total_staked > 0 {
+                panic!("cannot cancel call with active stakes");
+            }
+            if env.ledger().timestamp() <= call.end_ts + EMERGENCY_CANCEL_DELAY_SECS {
+                panic!("Emergency cancel delay has not elapsed");
+            }
+        }
+
+        call.cancelled = true;
+        call.voided = true;
+        set_call(&env, &call);
+        extend_storage_ttl(&env);
+
+        // Return the creator's escrowed stake; stakers withdraw their own.
+        transfer_token(
+            &env,
+            &call.stake_token,
+            &env.current_contract_address(),
+            &call.creator,
+            call.stake_amount,
+        );
+
+        emit_emergency_call_cancelled(&env, call_id, &caller);
+    }
+
+    /// Withdraw the exact staked principal from a cancelled or voided call.
+    /// Same rules as [`Self::claim_void_refund`]: no fee, once per staker.
+    pub fn withdraw_refund(env: Env, staker: Address, call_id: u64) {
+        Self::claim_void_refund(env, staker, call_id)
+    }
+
     /// Claim a full refund for an expired call that was never resolved/settled.
     /// Only callable after `end_ts + resolution_grace_period` has passed and the
     /// call has not been settled. Refunds the exact stake (no penalty, no profit).
@@ -1898,5 +1858,160 @@ impl CallRegistry {
 
         // Unknown kind - be conservative and reject.
         false
+    }
+}
+
+impl CallRegistry {
+    fn do_stake(
+        env: Env,
+        funder: Address,
+        staker: Address,
+        call_id: u64,
+        amount: i128,
+        position: u32,
+    ) -> Result<Call, CallRegistryError> {
+        // The funder authorises moving the tokens; the staker (usually the same
+        // address) is who the position is credited to.
+        funder.require_auth();
+        reentrancy_guard!(&env);
+
+        if amount <= 0 {
+            return Err(CallRegistryError::InvalidStakeAmount);
+        }
+
+        let config = get_config(&env).expect("not initialized");
+        assert!(!config.paused, "Contract is paused");
+        if amount < config.min_stake {
+            panic!("stake below minimum");
+        }
+
+        let mut call = get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
+
+        let current_timestamp = env.ledger().timestamp();
+        if current_timestamp >= call.end_ts {
+            return Err(CallRegistryError::CallEnded);
+        }
+
+        // Staking cutoff: reject stakes within `staking_cutoff_secs` of end_ts.
+        let cutoff = config.staking_cutoff_secs;
+        if cutoff > 0 && call.end_ts > cutoff && current_timestamp >= call.end_ts - cutoff {
+            return Err(CallRegistryError::StakingCutoffActive);
+        }
+
+        if call.settled {
+            return Err(CallRegistryError::CallSettled);
+        }
+
+        if call.cancelled {
+            panic!("Call has been cancelled");
+        }
+
+        if call.voided {
+            panic!("Call has been voided");
+        }
+
+        // Validate position is within valid range
+        if position < 1 || position > call.outcome_count {
+            return Err(CallRegistryError::InvalidPosition);
+        }
+
+        // Track first interaction
+        if get_account_first_seen(&env, &staker).is_none() {
+            let deployed_seq: u32 = env
+                .storage()
+                .instance()
+                .get(&Symbol::new(&env, "deployed_seq"))
+                .unwrap_or(env.ledger().sequence());
+            set_account_first_seen(&env, &staker, deployed_seq);
+        }
+
+        if !Self::check_user_qualifies(env.clone(), staker.clone(), call_id) {
+            panic!("User does not meet the staking gate requirements");
+        }
+
+        let mut outcome_stakers = call.stakes.get(position).unwrap_or_else(|| Map::new(&env));
+        let staker_key = staker.clone();
+        let current_staker_stake = outcome_stakers.get(staker_key.clone()).unwrap_or(0);
+        let updated_staker_stake = current_staker_stake + amount;
+
+        // Reputation-weighted individual stake cap (per call, per position).
+        // Replaces the old flat `max_stake_per_user`-only check: the user's
+        // personal limit now scales with their on-chain prediction accuracy
+        // and historical stake volume (see `reputation` module), while
+        // `max_stake_per_user`, if configured, still acts as an absolute
+        // outer ceiling on top of it.
+        let staker_stats = get_creator_stats(&env, &staker);
+        let staker_volume = get_user_total_stake_volume(&env, &staker);
+        let effective_limit = reputation::effective_stake_limit(
+            &env,
+            config.base_stake_limit,
+            config.reputation_multiplier,
+            config.max_stake_per_user,
+            &staker_stats,
+            staker_volume,
+        );
+        if updated_staker_stake > effective_limit {
+            panic!("Stake exceeds reputation-weighted stake limit");
+        }
+
+        // Transfer tokens in — supports both native XLM and SAC-wrapped tokens.
+        // For non-native tokens the contract's balance is measured around the
+        // transfer, so a fee-on-transfer token is credited only what actually
+        // arrived, and a transfer that delivers nothing is rejected.
+        let amount = if is_native_xlm(&env, &call.stake_token) {
+            transfer_token(
+                &env,
+                &call.stake_token,
+                &funder,
+                &env.current_contract_address(),
+                amount,
+            );
+            amount
+        } else {
+            let token_client = token::Client::new(&env, &call.stake_token);
+            let contract = env.current_contract_address();
+            let balance_before = token_client.balance(&contract);
+            transfer_token(&env, &call.stake_token, &funder, &contract, amount);
+            let received = token_client
+                .balance(&contract)
+                .checked_sub(balance_before)
+                .ok_or(CallRegistryError::InvalidStakeAmount)?;
+            if received <= 0 {
+                return Err(CallRegistryError::InvalidStakeAmount);
+            }
+            received.min(amount)
+        };
+        let updated_staker_stake = current_staker_stake + amount;
+
+        if let Some(share_token) = call.share_tokens.get(position) {
+            shares::mint_shares(&env, &share_token, &staker, amount);
+            emit_shares_minted(&env, call_id, &staker, position, amount);
+        }
+
+        // Update stake maps with generalized position support
+        let current_total = call.outcome_stakes.get(position).unwrap_or(0);
+        call.outcome_stakes.set(position, current_total + amount);
+
+        outcome_stakers.set(staker_key.clone(), updated_staker_stake);
+        call.stakes.set(position, outcome_stakers);
+
+        add_call_staker(&env, call_id, &staker);
+        set_user_stake(&env, call_id, &staker, position, updated_staker_stake);
+
+        set_call(&env, &call);
+        add_staker_call(&env, &staker, call_id);
+        record_stake(&env, &staker, amount);
+        record_user_stake_volume(&env, &staker, amount);
+        extend_storage_ttl(&env);
+
+        // Emit distinct XLM event so the indexer can differentiate XLM from USDC volume.
+        if is_native_xlm(&env, &call.stake_token) {
+            emit_xlm_stake_added(&env, call_id, &staker, amount, position);
+        } else {
+            emit_stake_added(&env, call_id, &staker, amount, position);
+        }
+
+        storage::release_lock(&env);
+        Ok(call)
     }
 }

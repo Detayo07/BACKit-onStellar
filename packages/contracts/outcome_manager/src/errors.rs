@@ -72,4 +72,7 @@ pub enum OutcomeError {
     /// The same oracle submitted a second resolution observation for the
     /// same `call_id` via `submit_resolution_observation`.
     DuplicateOracleObservation = 32,
+    /// This exact signed outcome was already accepted by this deployment. Unlike
+    /// `DuplicateSubmission` (temporary storage, can expire) this record is permanent.
+    ReplayedSubmission = 33,
 }

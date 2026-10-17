@@ -727,6 +727,47 @@ fn test_submit_duplicate_submission_fails() {
 }
 
 #[test]
+fn test_replayed_signature_rejected_after_temporary_submission_record_expires() {
+    use soroban_sdk::testutils::Ledger;
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let (secret1, pubkey1) = gen_keypair(&env);
+    let (_, pubkey2) = gen_keypair(&env);
+
+    let contract_id = env.register_contract(None, OutcomeManager);
+    let client = OutcomeManagerClient::new(&env, &contract_id);
+
+    let mut oracles = Vec::new(&env);
+    oracles.push_back(pubkey1.clone());
+    oracles.push_back(pubkey2);
+    let fee_collector = Address::generate(&env);
+    client.initialize(&admin, &oracles, &2u32, &fee_collector, &0u32, &0u64);
+
+    let registry_id = env.register_contract(None, MockRegistry);
+    let signed = SignedOutcome {
+        call_id: 7,
+        outcome: 1,
+        price: 100,
+        timestamp: 1000,
+        oracle_pubkey: pubkey1.clone(),
+        signature: sign_outcome(&env, &secret1, 7, 1, 100, 1000),
+    };
+
+    client.submit_outcome(&registry_id, &signed, &0u64);
+
+    // Let the temporary duplicate-submission entry lapse; the permanent replay
+    // record must still stop the same signature.
+    let mut ledger = env.ledger().get();
+    ledger.sequence_number += 100;
+    env.ledger().set(ledger);
+
+    let result = client.try_submit_outcome(&registry_id, &signed, &0u64);
+    assert_contract_error(result, OutcomeError::ReplayedSubmission);
+}
+
+#[test]
 fn test_submit_invalid_outcome_fails() {
     let env = Env::default();
     let (_admin, registry_id, oracle_secret, oracle_pubkey, client) = setup_single_oracle(&env);
