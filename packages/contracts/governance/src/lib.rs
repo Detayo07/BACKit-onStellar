@@ -3,14 +3,19 @@
 mod errors;
 mod events;
 mod storage;
+pub mod treasury;
 mod types;
 
 #[cfg(test)]
 mod test;
 
 use errors::GovernanceError;
-use events::{emit_delegation, emit_proposal_created, emit_proposal_executed, emit_vote_cast};
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
+use events::{
+    emit_delegation, emit_fee_split, emit_proposal_created, emit_proposal_executed,
+    emit_split_updated, emit_vote_cast,
+};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol, Vec};
+use treasury::{Bucket, TreasuryConfig};
 use storage::*;
 use types::{GovernanceConfig, Proposal, Vote};
 
@@ -174,6 +179,118 @@ impl Governance {
 
         emit_proposal_executed(&env, proposal_id);
         Ok(())
+    }
+
+    // ── Treasury fee split (SC-032) ────────────────────────────────────────
+
+    /// Set up the treasury (admin only, once): the signers whose approvals are
+    /// needed to change the split or withdraw from a bucket, how many are
+    /// needed, and the default 50 / 25 / 15 / 10 split.
+    pub fn init_treasury(
+        env: Env,
+        admin: Address,
+        signers: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), GovernanceError> {
+        let config = get_config(&env).ok_or(GovernanceError::NotInitialized)?;
+        if admin != config.admin {
+            return Err(GovernanceError::Unauthorized);
+        }
+        admin.require_auth();
+        if treasury::get_config(&env).is_some() {
+            return Err(GovernanceError::AlreadyInitialized);
+        }
+        if threshold == 0 || threshold > signers.len() {
+            return Err(GovernanceError::InvalidTreasuryConfig);
+        }
+        treasury::set_config(
+            &env,
+            &TreasuryConfig {
+                signers,
+                threshold,
+                split_bps: treasury::default_split(&env),
+            },
+        );
+        Ok(())
+    }
+
+    /// Replace the split table. `bps` is `[treasury, creator incentives, buyback,
+    /// burn]` and must sum to 10 000. Needs approval from `threshold` signers.
+    pub fn set_fee_split(env: Env, approvers: Vec<Address>, bps: Vec<u32>) -> Result<(), GovernanceError> {
+        let config = treasury::get_config(&env).ok_or(GovernanceError::NotInitialized)?;
+        treasury::require_signers(&env, &config, &approvers)?;
+        treasury::validate_split(&bps)?;
+        emit_split_updated(&env, &[bps.get(0).unwrap(), bps.get(1).unwrap(), bps.get(2).unwrap(), bps.get(3).unwrap()]);
+        treasury::set_config(&env, &TreasuryConfig { split_bps: bps, ..config });
+        Ok(())
+    }
+
+    /// Take `amount` of `token` from `payer` and split it across the four
+    /// buckets in one step. The burn bucket is burned immediately through the
+    /// token's burn interface; the others are held here and tracked per bucket.
+    /// Returns `[treasury, creators, buyback, burned]`.
+    pub fn ingest_fee(env: Env, payer: Address, token: Address, amount: i128) -> Result<Vec<i128>, GovernanceError> {
+        payer.require_auth();
+        let config = treasury::get_config(&env).ok_or(GovernanceError::NotInitialized)?;
+        if amount <= 0 {
+            return Err(GovernanceError::InvalidAmount);
+        }
+        let parts = treasury::split_amount(amount, &config.split_bps)?;
+
+        let this = env.current_contract_address();
+        let asset = token::Client::new(&env, &token);
+        asset.transfer(&payer, &this, &amount);
+
+        for (bucket, part) in [Bucket::Treasury, Bucket::CreatorIncentives, Bucket::Buyback]
+            .into_iter()
+            .zip(parts.iter().take(3))
+        {
+            treasury::set_balance(&env, &token, bucket, treasury::balance(&env, &token, bucket) + *part);
+        }
+        if parts[3] > 0 {
+            asset.burn(&this, &parts[3]);
+            treasury::add_burned(&env, &token, parts[3]);
+        }
+
+        emit_fee_split(&env, &token, amount, &parts);
+        Ok(Vec::from_array(&env, parts))
+    }
+
+    /// Pay `amount` out of a held bucket. Needs approval from `threshold` signers.
+    pub fn withdraw_bucket(
+        env: Env,
+        approvers: Vec<Address>,
+        token: Address,
+        bucket: Bucket,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), GovernanceError> {
+        let config = treasury::get_config(&env).ok_or(GovernanceError::NotInitialized)?;
+        treasury::require_signers(&env, &config, &approvers)?;
+        if amount <= 0 || bucket == Bucket::Burn {
+            return Err(GovernanceError::InvalidAmount);
+        }
+        let held = treasury::balance(&env, &token, bucket);
+        if held < amount {
+            return Err(GovernanceError::InsufficientBucket);
+        }
+        treasury::set_balance(&env, &token, bucket, held - amount);
+        token::Client::new(&env, &token).transfer(&env.current_contract_address(), &to, &amount);
+        Ok(())
+    }
+
+    pub fn fee_split(env: Env) -> Vec<u32> {
+        treasury::get_config(&env)
+            .map(|c| c.split_bps)
+            .unwrap_or_else(|| treasury::default_split(&env))
+    }
+
+    pub fn bucket_balance(env: Env, token: Address, bucket: Bucket) -> i128 {
+        treasury::balance(&env, &token, bucket)
+    }
+
+    pub fn total_burned(env: Env, token: Address) -> i128 {
+        treasury::total_burned(&env, &token)
     }
 
     pub fn delegate_votes(

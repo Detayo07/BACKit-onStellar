@@ -8,7 +8,12 @@ pub struct Badge {
     pub badge_type: Symbol,
     pub metadata_uri: soroban_sdk::String,
     pub minted_at: u64,
+    /// 1 (lowest) to 5 (highest); legacy `award_badge` badges are tier 1.
+    pub tier: u32,
 }
+
+/// Highest badge tier.
+pub const MAX_TIER: u32 = 5;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]

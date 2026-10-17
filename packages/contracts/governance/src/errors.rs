@@ -17,4 +17,12 @@ pub enum GovernanceError {
     QuorumNotMet = 11,
     AlreadyDelegated = 12,
     SelfDelegation = 13,
+    /// Fee split basis points do not sum to 10 000.
+    InvalidSplit = 30,
+    /// Fewer distinct treasury signers authorised the call than the threshold.
+    NotEnoughSigners = 31,
+    InvalidAmount = 32,
+    /// The bucket holds less than the requested amount.
+    InsufficientBucket = 33,
+    InvalidTreasuryConfig = 34,
 }

@@ -2,6 +2,24 @@
 
 use soroban_sdk::{Address, BytesN, Env};
 
+pub fn emit_heartbeat(env: &Env, pubkey: &BytesN<32>, ledger: u32) {
+    env.events()
+        .publish(("oracle_marketplace", "Heartbeat"), (pubkey.clone(), ledger));
+}
+
+pub fn emit_resolution_recorded(
+    env: &Env,
+    call_id: u64,
+    pubkey: &BytesN<32>,
+    multiplier_bps: u32,
+    bonus: i128,
+) {
+    env.events().publish(
+        ("oracle_marketplace", "ResolutionRecorded"),
+        (call_id, pubkey.clone(), multiplier_bps, bonus),
+    );
+}
+
 pub fn emit_oracle_registered(env: &Env, provider: &Address, pubkey: &BytesN<32>, fee_bps: u32) {
     env.events().publish(
         ("oracle_marketplace", "OracleRegistered"),

@@ -24,3 +24,17 @@ pub fn emit_delegation(env: &Env, delegator: &Address, delegate: &Address) {
         (delegator.clone(), delegate.clone()),
     );
 }
+
+pub fn emit_fee_split(env: &Env, token: &Address, amount: i128, split: &[i128; 4]) {
+    env.events().publish(
+        ("governance", "FeeSplit"),
+        (token.clone(), amount, split[0], split[1], split[2], split[3]),
+    );
+}
+
+pub fn emit_split_updated(env: &Env, bps: &[u32; 4]) {
+    env.events().publish(
+        ("governance", "FeeSplitUpdated"),
+        (bps[0], bps[1], bps[2], bps[3]),
+    );
+}
