@@ -718,6 +718,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "governance"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1228,6 +1235,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "reputation-nft"
+version = "0.0.0"
+dependencies = [
+ "backit-shared",
+ "ed25519-dalek",
+ "rand",
+ "soroban-sdk",
 ]
 
 [[package]]

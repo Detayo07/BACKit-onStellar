@@ -58,6 +58,32 @@ pub fn get_user_badge_ids(env: &Env, user: &Address) -> Vec<u64> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
+pub fn remove_badge(env: &Env, id: u64) {
+    env.storage().instance().remove(&DataKey::Badge(id));
+}
+
+pub fn remove_user_badge(env: &Env, user: &Address, badge_id: u64) {
+    let key = DataKey::UserBadges(user.clone());
+    let list: Vec<u64> = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    let mut kept = Vec::new(env);
+    for id in list.iter() {
+        if id != badge_id {
+            kept.push_back(id);
+        }
+    }
+    env.storage().instance().set(&key, &kept);
+}
+
+pub fn unmark_badge_awarded(env: &Env, badge_type: &Symbol, user: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::BadgeAwarded(badge_type.clone(), user.clone()));
+}
+
 pub fn has_badge_type(env: &Env, badge_type: &Symbol, user: &Address) -> bool {
     let key = DataKey::BadgeAwarded(badge_type.clone(), user.clone());
     env.storage().instance().get(&key).unwrap_or(false)

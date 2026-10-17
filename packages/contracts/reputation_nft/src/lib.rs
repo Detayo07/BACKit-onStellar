@@ -11,7 +11,7 @@ mod test;
 pub use types::{Badge, ReputationConfig};
 
 use errors::ReputationError;
-use events::emit_badge_awarded;
+use events::{emit_badge_awarded, emit_badge_revoked};
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
 
 #[contract]
@@ -50,6 +50,7 @@ impl ReputationNft {
             badge_type: badge_type.clone(),
             metadata_uri,
             minted_at: env.ledger().timestamp(),
+            tier: 1,
         };
 
         storage::set_badge(&env, token_id, &badge);
@@ -59,6 +60,103 @@ impl ReputationNft {
         emit_badge_awarded(&env, &recipient, &badge_type, token_id);
 
         Ok(token_id)
+    }
+
+    /// Mint a soulbound badge (admin only). `badge_id` must be `PARLAY_CHAMPION`,
+    /// `TOP_TIER_ACCURACY` or one of the legacy badge types; `tier` is 1 to 5.
+    /// A recipient can hold each badge once. Returns the new token id.
+    pub fn mint(
+        env: Env,
+        recipient: Address,
+        badge_id: Symbol,
+        tier: u32,
+        metadata_uri: soroban_sdk::String,
+    ) -> Result<u64, ReputationError> {
+        let config = storage::get_config(&env).ok_or(ReputationError::NotInitialized)?;
+        config.admin.require_auth();
+
+        if !Self::is_valid_badge(&env, &badge_id) {
+            return Err(ReputationError::InvalidBadgeType);
+        }
+        if tier == 0 || tier > types::MAX_TIER {
+            return Err(ReputationError::InvalidTier);
+        }
+        if storage::has_badge_type(&env, &badge_id, &recipient) {
+            return Err(ReputationError::BadgeAlreadyAwarded);
+        }
+
+        let token_id = storage::next_badge_id(&env);
+        storage::set_badge(
+            &env,
+            token_id,
+            &Badge {
+                token_id,
+                recipient: recipient.clone(),
+                badge_type: badge_id.clone(),
+                metadata_uri,
+                minted_at: env.ledger().timestamp(),
+                tier,
+            },
+        );
+        storage::add_user_badge(&env, &recipient, token_id);
+        storage::mark_badge_awarded(&env, &badge_id, &recipient);
+        emit_badge_awarded(&env, &recipient, &badge_id, token_id);
+        Ok(token_id)
+    }
+
+    /// Revoke a badge (admin only): it is deleted and its holder may be awarded it again.
+    pub fn revoke(env: Env, token_id: u64) -> Result<(), ReputationError> {
+        let config = storage::get_config(&env).ok_or(ReputationError::NotInitialized)?;
+        config.admin.require_auth();
+        let badge = storage::get_badge(&env, token_id).ok_or(ReputationError::BadgeNotFound)?;
+
+        storage::remove_badge(&env, token_id);
+        storage::remove_user_badge(&env, &badge.recipient, token_id);
+        storage::unmark_badge_awarded(&env, &badge.badge_type, &badge.recipient);
+        emit_badge_revoked(&env, &badge.recipient, &badge.badge_type, token_id);
+        Ok(())
+    }
+
+    /// Number of badges `owner` holds.
+    pub fn balance(env: Env, owner: Address) -> u32 {
+        storage::get_user_badge_ids(&env, &owner).len()
+    }
+
+    pub fn owner_of(env: Env, token_id: u64) -> Result<Address, ReputationError> {
+        storage::get_badge(&env, token_id)
+            .map(|b| b.recipient)
+            .ok_or(ReputationError::BadgeNotFound)
+    }
+
+    /// Public metadata for a badge: its URI and tier.
+    pub fn metadata(env: Env, token_id: u64) -> Result<(soroban_sdk::String, u32), ReputationError> {
+        storage::get_badge(&env, token_id)
+            .map(|b| (b.metadata_uri, b.tier))
+            .ok_or(ReputationError::BadgeNotFound)
+    }
+
+    pub fn get_badge(env: Env, token_id: u64) -> Result<Badge, ReputationError> {
+        storage::get_badge(&env, token_id).ok_or(ReputationError::BadgeNotFound)
+    }
+
+    /// Always fails: badges are soulbound.
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _token_id: u64,
+    ) -> Result<(), ReputationError> {
+        Err(ReputationError::NonTransferable)
+    }
+
+    fn is_valid_badge(env: &Env, badge: &Symbol) -> bool {
+        *badge == Symbol::new(env, "PARLAY_CHAMPION")
+            || *badge == Symbol::new(env, "TOP_TIER_ACCURACY")
+            || *badge == types::BADGE_TOP10
+            || *badge == types::BADGE_100CORRECT
+            || *badge == types::BADGE_EARLY
+            || *badge == types::BADGE_MILLION
     }
 
     pub fn check_and_award_badges(env: Env, user: Address) -> Vec<u64> {
@@ -125,7 +223,7 @@ impl ReputationNft {
         _to: Address,
         _token_id: u64,
     ) -> Result<(), ReputationError> {
-        Err(ReputationError::TransferNotAllowed)
+        Err(ReputationError::NonTransferable)
     }
 
     fn get_user_stats(_env: &Env, _user: &Address) -> UserStats {
